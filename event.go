@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -60,6 +61,7 @@ var (
 //
 // The parameter is a channel through which events will be sent.
 func (c *Client) AddEventListener(listener chan<- *APIEvents) error {
+	log.Printf("[go-dockerclient] Adding event listener")
 	var err error
 	if !c.eventMonitor.isEnabled() {
 		err = c.eventMonitor.enableEventMonitoring(c)
@@ -161,11 +163,13 @@ func (eventState *eventMonitoringState) disableEventMonitoring() error {
 }
 
 func (eventState *eventMonitoringState) monitorEvents(c *Client) {
+	log.Printf("[go-dockerclient] entering monitorEvents")
 	var err error
 	for eventState.noListeners() {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if err = eventState.connectWithRetry(c); err != nil {
+		log.Printf("[go-dockerclient] monitorEvents exceeded retries, disabling event monitoring")
 		// terminate if connect failed
 		eventState.disableEventMonitoring()
 		return
@@ -188,6 +192,7 @@ func (eventState *eventMonitoringState) monitorEvents(c *Client) {
 				eventState.disableEventMonitoring()
 				return
 			} else if err != nil {
+				log.Printf("[go-dockerclient] monitorEvents received error, restarting self")
 				defer func() { go eventState.monitorEvents(c) }()
 				return
 			}
@@ -204,6 +209,9 @@ func (eventState *eventMonitoringState) connectWithRetry(c *Client) error {
 		waitTime := int64(retryInitialWaitTime * math.Pow(2, float64(retries)))
 		time.Sleep(time.Duration(waitTime) * time.Millisecond)
 		err = c.eventHijack(atomic.LoadInt64(eventState.lastSeen), eventState.C, eventState.errC)
+		if err != nil {
+			log.Printf("[go-dockerclient] connectWithRetry (retries = %v, err = %v)", retries, err)
+		}
 	}
 	return err
 }
@@ -264,15 +272,19 @@ func (c *Client) eventHijack(startTime int64, eventChan chan *APIEvents, errChan
 		dial, err = tlsDialWithDialer(c.Dialer, protocol, address, c.TLSConfig)
 	}
 	if err != nil {
+		log.Printf("[go-dockerclient] eventHijack dial error %v", err)
 		return err
 	}
 	conn := httputil.NewClientConn(dial, nil)
 	req, err := http.NewRequest("GET", uri, nil)
 	if err != nil {
+		log.Printf("[go-dockerclient] eventHijack new request error %v", err)
 		return err
 	}
+	log.Printf("[go-dockerclient] eventHijack new request %v", req)
 	res, err := conn.Do(req)
 	if err != nil {
+		log.Printf("[go-dockerclient] eventHijack do request error %v", err)
 		return err
 	}
 	go func(res *http.Response, conn *httputil.ClientConn) {
@@ -280,9 +292,12 @@ func (c *Client) eventHijack(startTime int64, eventChan chan *APIEvents, errChan
 		defer res.Body.Close()
 		decoder := json.NewDecoder(res.Body)
 		for {
+			log.Printf("[go-dockerclient] eventHijack waiting for event")
 			var event APIEvents
 			if err = decoder.Decode(&event); err != nil {
+				log.Printf("[go-dockerclient] eventHijack event decode error %v", err)
 				if err == io.EOF || err == io.ErrUnexpectedEOF {
+					log.Printf("[go-dockerclient] eventHijack IO EOF %v", err)
 					if c.eventMonitor.isEnabled() {
 						// Signal that we're exiting.
 						eventChan <- EOFEvent
@@ -297,6 +312,7 @@ func (c *Client) eventHijack(startTime int64, eventChan chan *APIEvents, errChan
 			if !c.eventMonitor.isEnabled() {
 				return
 			}
+			log.Printf("[go-dockerclient] decoded event %v", event)
 			eventChan <- &event
 		}
 	}(res, conn)
