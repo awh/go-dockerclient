@@ -253,6 +253,16 @@ func (eventState *eventMonitoringState) updateLastSeen(e *APIEvents) {
 	}
 }
 
+type loggingReader struct {
+	r io.Reader
+}
+
+func (lr *loggingReader) Read(p []byte) (n int, err error) {
+	n, err = lr.r.Read(p)
+	log.Printf("[go-dockerclient] [%v] %v %v", string(p[:n]), n, err)
+	return
+}
+
 func (c *Client) eventHijack(startTime int64, eventChan chan *APIEvents, errChan chan error) error {
 	uri := "/events"
 	if startTime != 0 {
@@ -290,7 +300,7 @@ func (c *Client) eventHijack(startTime int64, eventChan chan *APIEvents, errChan
 	go func(res *http.Response, conn *httputil.ClientConn) {
 		defer conn.Close()
 		defer res.Body.Close()
-		decoder := json.NewDecoder(res.Body)
+		decoder := json.NewDecoder(&loggingReader{res.Body})
 		for {
 			log.Printf("[go-dockerclient] eventHijack waiting for event")
 			var event APIEvents
